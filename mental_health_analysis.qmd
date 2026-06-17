@@ -1,0 +1,513 @@
+```{python}
+
+# Section 1: Import Libraries and Load Data
+
+import pandas as pd
+import numpy as np
+
+import matplotlib.pyplot as plt
+
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.impute import SimpleImputer
+
+from sklearn.linear_model import LogisticRegression, Ridge
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor, GradientBoostingClassifier, GradientBoostingRegressor
+
+from sklearn.metrics import (
+    accuracy_score, precision_score, recall_score, f1_score, roc_auc_score,
+    confusion_matrix, classification_report,
+    mean_absolute_error, mean_squared_error, r2_score
+)
+
+# Load dataset
+df = pd.read_csv("student_mental_health_hybrid_learning.csv")
+
+print("Dataset shape:", df.shape)
+display(df.head())
+display(df.info())
+
+```
+
+
+```{python}
+
+# Section 2: Basic Data Cleaning
+
+# Standardize gender labels
+df["gender"] = df["gender"].replace({
+    "M": "Male",
+    "F": "Female",
+    "male": "Male",
+    "female": "Female"
+})
+
+# Remove ID column because it is not useful for modeling
+df_model = df.drop(columns=["student_id"])
+
+# Check missing values
+print("Missing values:")
+display(df_model.isnull().sum())
+
+# Basic summary statistics
+display(df_model.describe())
+
+```
+
+# The descriptive analysis
+The descriptive analysis shows that the average student was approximately 21.5 years old and slept about 6.2 hours per day, which is slightly below the recommended amount for young adults. Students reported an average of 5 hours of daily screen time and participated in physical activity about 2.6 days per week.
+
+Mental health indicators suggest that many students experienced mild to moderate levels of depression, anxiety, and stress. The average PHQ-9 score was 6.45, the average GAD-7 score was 6.28, and the average perceived stress score was 12.12. Although most students were not in the severe risk category, the wide score ranges indicate substantial variation in mental well-being across the student population.
+
+Academically, students studied an average of 18.3 hours per week and maintained an average class attendance rate of 79.4%. The average CGPA was 2.96, with values ranging from 1.83 to 4.30, suggesting noticeable differences in academic performance among students.
+
+
+```{python}
+
+# General Cleaning
+
+df_model["online_learning_satisfaction"] = (
+    df_model["online_learning_satisfaction"]
+    .fillna(df_model["online_learning_satisfaction"].median())
+)
+
+# Mental Health Dataset
+df_mh = df_model.dropna(
+    subset=["phq9_score", "gad7_score"]
+).copy()
+
+# CGPA Dataset
+df_cgpa = df_model.dropna(
+    subset=["cgpa"]
+).copy()
+
+```
+
+
+```{python}
+
+# Section 3: Research Question 1
+# Can lifestyle and academic factors predict high mental health risk?
+
+# Create target variable:
+# High mental health risk = PHQ-9 >= 10 or GAD-7 >= 10
+# PHQ-9 >= 10 usually suggests moderate or higher depression symptoms.
+# GAD-7 >= 10 usually suggests moderate or higher anxiety symptoms.
+
+df_mh = df_model.copy()
+
+df_mh["high_mental_health_risk"] = np.where(
+    (df_mh["phq9_score"] >= 10) | (df_mh["gad7_score"] >= 10),
+    1,
+    0
+)
+
+# Drop PHQ-9 and GAD-7 from features because the target is created from them.
+X = df_mh.drop(columns=["high_mental_health_risk", "phq9_score", "gad7_score"])
+y = df_mh["high_mental_health_risk"]
+
+numeric_features = X.select_dtypes(include=["int64", "float64"]).columns.tolist()
+categorical_features = X.select_dtypes(include=["object"]).columns.tolist()
+
+numeric_transformer = Pipeline(steps=[
+    ("imputer", SimpleImputer(strategy="median")),
+    ("scaler", StandardScaler())
+])
+
+categorical_transformer = Pipeline(steps=[
+    ("imputer", SimpleImputer(strategy="most_frequent")),
+    ("encoder", OneHotEncoder(handle_unknown="ignore"))
+])
+
+preprocessor = ColumnTransformer(
+    transformers=[
+        ("num", numeric_transformer, numeric_features),
+        ("cat", categorical_transformer, categorical_features)
+    ]
+)
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y,
+    test_size=0.2,
+    random_state=42,
+    stratify=y
+)
+
+print("Target distribution:")
+display(y.value_counts(normalize=True))
+
+
+```
+
+
+# Target distribution
+
+The target variable showed a moderate class imbalance, with 76.8% of students classified as low mental health risk and 23.2% classified as high mental health risk. Although the imbalance is not severe, evaluation metrics such as Precision, Recall, F1-score, and ROC-AUC were used in addition to Accuracy to provide a more reliable assessment of model performance.
+
+
+```{python}
+
+# Section 4: Classification Model Comparison
+
+classification_models = {
+    "Logistic Regression": LogisticRegression(max_iter=1000, class_weight="balanced"),
+    "Random Forest": RandomForestClassifier(random_state=42, class_weight="balanced"),
+    "Gradient Boosting": GradientBoostingClassifier(random_state=42)
+}
+
+classification_results = []
+
+for name, model in classification_models.items():
+    clf = Pipeline(steps=[
+        ("preprocessor", preprocessor),
+        ("model", model)
+    ])
+    
+    clf.fit(X_train, y_train)
+    y_pred = clf.predict(X_test)
+    
+    if hasattr(clf.named_steps["model"], "predict_proba"):
+        y_prob = clf.predict_proba(X_test)[:, 1]
+        auc = roc_auc_score(y_test, y_prob)
+    else:
+        auc = np.nan
+    
+    classification_results.append({
+        "Model": name,
+        "Accuracy": accuracy_score(y_test, y_pred),
+        "Precision": precision_score(y_test, y_pred, zero_division=0),
+        "Recall": recall_score(y_test, y_pred, zero_division=0),
+        "F1": f1_score(y_test, y_pred, zero_division=0),
+        "ROC_AUC": auc
+    })
+
+classification_results_df = pd.DataFrame(classification_results).sort_values(
+    by="ROC_AUC",
+    ascending=False
+)
+
+display(classification_results_df)
+
+best_clf_name = classification_results_df.iloc[0]["Model"]
+best_clf_model = classification_models[best_clf_name]
+
+best_clf = Pipeline(steps=[
+    ("preprocessor", preprocessor),
+    ("model", best_clf_model)
+])
+
+best_clf.fit(X_train, y_train)
+y_pred_best = best_clf.predict(X_test)
+
+print("Best classification model:", best_clf_name)
+print("\nClassification Report:")
+print(classification_report(y_test, y_pred_best))
+
+print("Confusion Matrix:")
+print(confusion_matrix(y_test, y_pred_best))
+
+```
+
+# Best-performing model 
+
+Although Gradient Boosting achieved the highest accuracy (83%), Logistic Regression produced the highest ROC-AUC score (0.90) and the highest recall (0.87). Since the primary objective is to identify students at risk of mental health issues, Logistic Regression was selected as the best-performing model.
+
+
+# The classification report
+
+The classification report indicates that the Logistic Regression model achieved an overall accuracy of 80%. For the low-risk group (Class 0), the model achieved a precision of 0.95 and an F1-score of 0.86, demonstrating strong performance in identifying students with lower mental health risk. For the high-risk group (Class 1), the model achieved a recall of 0.87, meaning that approximately 87% of high-risk students were correctly identified. Although the precision for the high-risk group was lower at 0.54, the high recall is particularly valuable because the primary goal is to detect students who may need mental health support. Overall, the model provides a good balance between predictive accuracy and the ability to identify at-risk students, making it suitable as an early screening tool for mental health risk assessment.
+
+
+# Interpretation of the Confusion Matrix
+
+The model correctly identified 20 out of 23 high-risk students while missing only 3 cases. This resulted in a recall score of 86.96%, indicating that the model was highly effective at detecting students who may require mental health support.
+
+However, the model incorrectly classified 17 low-risk students as high-risk. While this reduced precision, it is generally acceptable in a mental health screening context because failing to identify an at-risk student is usually more concerning than conducting an additional assessment for a student who is not actually at risk.
+
+
+```{python}
+
+# Section 5: Logistic Regression Feature Importance Analysis
+
+feature_names = best_clf.named_steps[
+    "preprocessor"
+].get_feature_names_out()
+
+coefficients = best_clf.named_steps[
+    "model"
+].coef_[0]
+
+coef_df = pd.DataFrame({
+    "Feature": feature_names,
+    "Coefficient": coefficients
+})
+
+coef_df["Abs_Coefficient"] = abs(coef_df["Coefficient"])
+
+coef_df = coef_df.sort_values(
+    by="Abs_Coefficient",
+    ascending=False
+)
+
+display(coef_df.head(15))
+
+plt.figure(figsize=(10,6))
+plt.barh(
+    coef_df.head(15)["Feature"][::-1],
+    coef_df.head(15)["Coefficient"][::-1]
+)
+
+plt.title("Top Factors Associated with Mental Health Risk")
+plt.xlabel("Logistic Regression Coefficient")
+plt.ylabel("Feature")
+plt.tight_layout()
+plt.show()
+
+```
+
+# Interpretation of Logistic Regression Coefficients
+
+The coefficient analysis shows that perceived stress scale is by far the strongest predictor of mental health risk, with a coefficient of 2.71. This suggests that students reporting higher stress levels are substantially more likely to be classified as high mental health risk. The magnitude of this coefficient is considerably larger than all other variables, indicating that perceived stress plays a dominant role in the model.
+
+Among demographic and academic variables, students in Health Sciences and STEM majors show positive associations with mental health risk, while students in Humanities and Social Sciences show negative associations. In addition, male students have a slightly higher predicted probability of being classified as high risk compared to the reference gender category.
+
+Several variables appear to have protective effects. Higher CGPA, greater physical activity frequency, and more weekly study hours are associated with lower mental health risk, as indicated by their negative coefficients. These findings suggest that stronger academic performance and healthier lifestyle habits may be linked to better mental well-being.
+
+Overall, the results indicate that stress is the most influential factor in predicting mental health risk, while academic performance, physical activity, and certain demographic characteristics also contribute to the model's predictions.
+
+Interestingly, daily screen time showed a negative coefficient in the model. While this indicates an inverse relationship after controlling for other variables, the result should be interpreted with caution because it may reflect interactions with other academic and lifestyle factors rather than a direct protective effect.
+
+
+
+```{python}
+
+# Section 6: Research Question 2
+# Can we predict CGPA using lifestyle, academic, and mental health variables?
+
+df_cgpa = df_model.copy()
+
+# Drop rows where CGPA is missing because CGPA is the target variable
+df_cgpa = df_cgpa.dropna(subset=["cgpa"])
+
+X_reg = df_cgpa.drop(columns=["cgpa"])
+y_reg = df_cgpa["cgpa"]
+
+numeric_features_reg = X_reg.select_dtypes(include=["int64", "float64"]).columns.tolist()
+categorical_features_reg = X_reg.select_dtypes(include=["object"]).columns.tolist()
+
+numeric_transformer_reg = Pipeline(steps=[
+    ("imputer", SimpleImputer(strategy="median")),
+    ("scaler", StandardScaler())
+])
+
+categorical_transformer_reg = Pipeline(steps=[
+    ("imputer", SimpleImputer(strategy="most_frequent")),
+    ("encoder", OneHotEncoder(handle_unknown="ignore"))
+])
+
+preprocessor_reg = ColumnTransformer(
+    transformers=[
+        ("num", numeric_transformer_reg, numeric_features_reg),
+        ("cat", categorical_transformer_reg, categorical_features_reg)
+    ]
+)
+
+X_train_reg, X_test_reg, y_train_reg, y_test_reg = train_test_split(
+    X_reg,
+    y_reg,
+    test_size=0.2,
+    random_state=42
+)
+
+print("Regression dataset shape:", df_cgpa.shape)
+
+
+```
+
+
+```{python}
+
+# Section 7: Regression Model Comparison
+
+regression_models = {
+    "Ridge Regression": Ridge(),
+    "Random Forest Regressor": RandomForestRegressor(random_state=42),
+    "Gradient Boosting Regressor": GradientBoostingRegressor(random_state=42)
+}
+
+regression_results = []
+
+for name, model in regression_models.items():
+    reg = Pipeline(steps=[
+        ("preprocessor", preprocessor_reg),
+        ("model", model)
+    ])
+    
+    reg.fit(X_train_reg, y_train_reg)
+    y_pred_reg = reg.predict(X_test_reg)
+    
+    mae = mean_absolute_error(y_test_reg, y_pred_reg)
+    rmse = np.sqrt(mean_squared_error(y_test_reg, y_pred_reg))
+    r2 = r2_score(y_test_reg, y_pred_reg)
+    
+    regression_results.append({
+        "Model": name,
+        "MAE": mae,
+        "RMSE": rmse,
+        "R_squared": r2
+    })
+
+regression_results_df = pd.DataFrame(regression_results).sort_values(
+    by="RMSE",
+    ascending=True
+)
+
+display(regression_results_df)
+
+best_reg_name = regression_results_df.iloc[0]["Model"]
+best_reg_model = regression_models[best_reg_name]
+
+best_reg = Pipeline(steps=[
+    ("preprocessor", preprocessor_reg),
+    ("model", best_reg_model)
+])
+
+best_reg.fit(X_train_reg, y_train_reg)
+y_pred_best_reg = best_reg.predict(X_test_reg)
+
+print("Best regression model:", best_reg_name)
+print("MAE:", mean_absolute_error(y_test_reg, y_pred_best_reg))
+print("RMSE:", np.sqrt(mean_squared_error(y_test_reg, y_pred_best_reg)))
+print("R-squared:", r2_score(y_test_reg, y_pred_best_reg))
+
+```
+
+# Best regression model: Ridge Regression
+MAE: 0.2523727896421249
+RMSE: 0.30714631241739687
+R-squared: 0.3360461814575233
+
+Ridge Regression achieved the best overall performance, producing the lowest MAE (0.252), the lowest RMSE (0.307), and the highest R² value (0.336). Therefore, Ridge Regression was selected as the best-performing model for predicting student CGPA.
+
+# Interpretation
+
+The model explains approximately 33.6% of the variation in CGPA.
+
+R² = 0.336
+
+This means:
+
+About 34% of CGPA differences can be explained by the variables in the dataset.
+About 66% is influenced by factors not included in the dataset.
+
+For educational and behavioral data, an R² around 0.30–0.40 is actually fairly reasonable because academic performance is affected by many factors that were not measured, such as:
+
+individual ability
+course difficulty
+motivation
+learning style
+family background
+prior academic preparation
+
+
+
+```{python}
+
+# Section 8: Actual vs Predicted CGPA
+
+prediction_df = pd.DataFrame({
+    "Actual_CGPA": y_test_reg.values,
+    "Predicted_CGPA": y_pred_best_reg
+})
+
+display(prediction_df.head(20))
+
+plt.figure(figsize=(7, 5))
+plt.scatter(prediction_df["Actual_CGPA"], prediction_df["Predicted_CGPA"])
+plt.xlabel("Actual CGPA")
+plt.ylabel("Predicted CGPA")
+plt.title("Actual vs Predicted CGPA")
+plt.tight_layout()
+plt.show()
+
+
+```
+
+# Actual vs Predicted CGPA Analysis
+
+The scatter plot shows a positive relationship between actual and predicted CGPA values, indicating that the model successfully captures the general trend in academic performance. As actual CGPA increases, predicted CGPA also tends to increase, suggesting that the model has learned meaningful patterns from the data.
+
+However, the predictions are concentrated around the middle range of CGPA values (approximately 2.7–3.3). The model tends to overestimate students with lower CGPAs and underestimate students with higher CGPAs. For example, some students with actual CGPAs above 3.5 were predicted closer to 3.0, while some lower-performing students received predictions higher than their actual values. This pattern indicates regression toward the mean, which is common in educational datasets where academic performance is influenced by many unobserved factors.
+
+Overall, the results suggest that the model is useful for identifying general academic performance trends but is less effective at accurately predicting extreme high- or low-performing students. This finding is consistent with the moderate R² value of 0.336, indicating that while the available variables contribute to academic performance, additional factors not included in the dataset likely play an important role.
+
+
+```{python}
+
+# Section 9: Ridge Regression Coefficient Analysis for CGPA Prediction
+
+# Get feature names after preprocessing
+feature_names_reg = best_reg.named_steps[
+    "preprocessor"
+].get_feature_names_out()
+
+# Get Ridge Regression coefficients
+coefficients_reg = best_reg.named_steps[
+    "model"
+].coef_
+
+# Create coefficient dataframe
+ridge_coef_df = pd.DataFrame({
+    "Feature": feature_names_reg,
+    "Coefficient": coefficients_reg
+})
+
+# Use absolute coefficient value to rank feature influence
+ridge_coef_df["Abs_Coefficient"] = abs(ridge_coef_df["Coefficient"])
+
+ridge_coef_df = ridge_coef_df.sort_values(
+    by="Abs_Coefficient",
+    ascending=False
+)
+
+display(ridge_coef_df.head(15))
+
+# Visualize top 15 coefficients
+plt.figure(figsize=(10, 6))
+plt.barh(
+    ridge_coef_df.head(15)["Feature"][::-1],
+    ridge_coef_df.head(15)["Coefficient"][::-1]
+)
+
+plt.title("Top Factors Associated with CGPA Prediction")
+plt.xlabel("Ridge Regression Coefficient")
+plt.ylabel("Feature")
+plt.tight_layout()
+plt.show()
+
+```
+
+# The Ridge Regression coefficient analysis
+
+The Ridge Regression coefficient analysis shows that weekly study hours and class attendance percentage are the strongest positive predictors of CGPA. This suggests that students who spend more time studying and attend classes more regularly tend to have higher predicted academic performance. In contrast, GAD-7 score has the strongest negative coefficient, indicating that higher anxiety levels are associated with lower predicted CGPA. Daily sleep hours also show a positive relationship with CGPA, suggesting that better sleep habits may support academic performance. Additionally, students without part-time jobs have a positive coefficient, while students with part-time jobs have a negative coefficient, which may suggest that work responsibilities could reduce available study time. Overall, the model indicates that academic engagement, mental health, and lifestyle factors are meaningfully associated with student CGPA.
+
+
+
+```{python}
+
+
+
+```
+
+
+# Final Conclusion
+
+This project analyzed the relationships between student lifestyle, academic engagement, mental health, and academic performance in a hybrid learning environment using data from 500 university students.
+
+For mental health risk prediction, Logistic Regression was identified as the best-performing classification model, achieving an accuracy of 80% and an ROC-AUC score of 0.90. The model successfully identified approximately 87% of high-risk students, demonstrating that behavioral, academic, and psychological factors can be used to effectively predict mental health risk. Among all variables, perceived stress was the strongest predictor of mental health risk, while higher CGPA and greater physical activity were associated with lower risk.
+
+For academic performance prediction, Ridge Regression achieved the best results with an MAE of 0.252, an RMSE of 0.307, and an R² value of 0.336. The results indicate that academic performance is influenced by multiple factors, with weekly study hours and class attendance showing the strongest positive relationships with CGPA. In contrast, higher anxiety levels were associated with lower academic performance.
+
+Overall, the findings suggest that mental health, study habits, attendance, and lifestyle behaviors are closely connected to student success. Students who maintain consistent study routines, attend classes regularly, manage stress effectively, and engage in healthy habits tend to achieve better academic outcomes and lower mental health risk. While the models cannot establish causal relationships, they provide valuable insights into the factors associated with student well-being and academic achievement in higher education.
